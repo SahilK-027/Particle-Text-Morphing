@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>GPU Particles -> Font Morph (Three.js)</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        background: #000;
+      }
+      #ui {
+        position: fixed;
+        left: 12px;
+        top: 12px;
+        color: #fff;
+        font-family: monospace;
+        z-index: 10;
+      }
+      button,
+      input {
+        font-family: inherit;
+      }
+    </style>
+
+    <!-- Import map fixes module resolution errors in sandboxed environments -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.152.2/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.152.2/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="ui">
+      <div>
+        <button id="btnForm">Morph → Text</button>
+        <button id="btnScatter">Scatter</button>
+        <label
+          >Particles:
+          <input
+            id="countRange"
+            type="range"
+            min="2000"
+            max="120000"
+            step="1000"
+            value="30000"
+        /></label>
+        <label
+          >Gap:
+          <input id="gapRange" type="range" min="2" max="8" step="1" value="4"
+        /></label>
+      </div>
+      <div style="margin-top: 8px">
+        Font file: place <code>Cinzel.woff2</code> in same folder and name it
+        that.
+      </div>
+      <div style="margin-top: 8px">
+        Open via a local server (font loading requires it).
+      </div>
+    </div>
+
+    <script type="module">
+      import * as THREE from "three";
+      import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+      // ----------------------------
+      // Config
+      // ----------------------------
+      const TEXT = "MORPH";
+      const FONT_FILE = "cinzel.woff2";
+      const CANVAS_TEXT_SIZE = 700;
+      let PARTICLE_COUNT = parseInt(
+        document.getElementById("countRange").value
+      );
+      let GAP = parseInt(document.getElementById("gapRange").value);
+
+      // ----------------------------
+      // Scene
+      // ----------------------------
+      const scene = new THREE.Scene();
+      const camera = new THREE.PerspectiveCamera(
+        45,
+        innerWidth / innerHeight,
+        0.1,
+        1000
+      );
+      camera.position.set(0, 0, 350);
+
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(innerWidth, innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      document.body.appendChild(renderer.domElement);
+
+      const controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+
+      // ----------------------------
+      // UI
+      // ----------------------------
+      const btnForm = document.getElementById("btnForm");
+      const btnScatter = document.getElementById("btnScatter");
+      const countRange = document.getElementById("countRange");
+      const gapRange = document.getElementById("gapRange");
+
+      countRange.addEventListener("input", () => {
+        PARTICLE_COUNT = parseInt(countRange.value);
+        regenerate();
+      });
+      gapRange.addEventListener("input", () => {
+        GAP = parseInt(gapRange.value);
+        regenerate();
+      });
+      btnForm.addEventListener("click", () => animateTo(1));
+      btnScatter.addEventListener("click", () => animateTo(0));
+
+      // ----------------------------
+      // Font + Canvas
+      // ----------------------------
+      async function loadLocalFont(name, url) {
+        const face = new FontFace(name, `url(${url})`);
+        await face.load();
+        document.fonts.add(face);
+        await document.fonts.ready;
+      }
+
+      function renderTextToCanvas(text, fontFamily, width, height) {
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+
+        ctx.fillStyle = "#000";
+        ctx.fillRect(0, 0, width, height);
+
+        let fontSize = Math.floor(height * 0.65);
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "#fff";
+        ctx.font = `${fontSize}px '${fontFamily}'`;
+
+        while (ctx.measureText(text).width > width * 0.95) {
+          fontSize -= 4;
+          ctx.font = `${fontSize}px '${fontFamily}'`;
+        }
+
+        ctx.fillText(text, width / 2, height / 2);
+        return canvas;
+      }
+
+      // ----------------------------
+      // Particles
+      // ----------------------------
+      let points;
+      let targetProgress = 0;
+      let progress = 0;
+      let time = 0;
+
+      function buildFromCanvas(canvas) {
+        const ctx = canvas.getContext("2d");
+        const { width: w, height: h } = canvas;
+        const data = ctx.getImageData(0, 0, w, h).data;
+
+        const pixels = [];
+        for (let y = 0; y < h; y += GAP)
+          for (let x = 0; x < w; x += GAP) {
+            const idx = (x + y * w) * 4;
+            const r = data[idx],
+              g = data[idx + 1],
+              b = data[idx + 2];
+            // compute simple brightness / luminance and sample bright pixels only
+            const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+            if (lum > 50) pixels.push({ x, y });
+          }
+
+        const count = Math.min(PARTICLE_COUNT, pixels.length);
+        const pos = new Float32Array(count * 3);
+        const tgt = new Float32Array(count * 3);
+        const rnd = new Float32Array(count);
+
+        const ww = 700;
+        const wh = (h / w) * ww;
+
+        for (let i = 0; i < count; i++) {
+          const p = pixels[Math.floor(Math.random() * pixels.length)];
+          tgt[i * 3] = (p.x / w - 0.5) * ww;
+          tgt[i * 3 + 1] = -(p.y / h - 0.5) * wh;
+          tgt[i * 3 + 2] = 0;
+
+          pos[i * 3] = (Math.random() - 0.5) * ww * 1.5;
+          pos[i * 3 + 1] = (Math.random() - 0.5) * wh * 1.5;
+          pos[i * 3 + 2] = (Math.random() - 0.5) * 800;
+
+          rnd[i] = Math.random();
+        }
+
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+        geo.setAttribute("aTarget", new THREE.BufferAttribute(tgt, 3));
+        geo.setAttribute("aRandom", new THREE.BufferAttribute(rnd, 1));
+
+        const mat = new THREE.ShaderMaterial({
+          uniforms: { uTime: { value: 0 }, uProgress: { value: 0 } },
+          vertexShader: `
+          attribute vec3 aTarget; attribute float aRandom;
+          uniform float uTime; uniform float uProgress;
+          void main(){
+            float t = smoothstep(0.,1.,uProgress);
+            vec3 p = mix(position,aTarget,t);
+            p += sin(uTime + aRandom*6.283)*20.0*(1.0-t);
+            vec4 mv = modelViewMatrix * vec4(p,1.);
+            gl_PointSize = 2.5*(300.0/-mv.z);
+            gl_Position = projectionMatrix*mv;
+          }
+        `,
+          fragmentShader: `
+          void main(){
+            if(length(gl_PointCoord-0.5)>0.5) discard;
+            gl_FragColor = vec4(1.0);
+          }
+        `,
+        });
+
+        if (points) {
+          scene.remove(points);
+          points.geometry.dispose();
+          points.material.dispose();
+        }
+        points = new THREE.Points(geo, mat);
+        scene.add(points);
+      }
+
+      function animateTo(v) {
+        targetProgress = v;
+      }
+
+      async function regenerate() {
+        await loadLocalFont("CinzelLocal", FONT_FILE);
+        const canvas = renderTextToCanvas(
+          TEXT,
+          "CinzelLocal",
+          CANVAS_TEXT_SIZE * 2,
+          CANVAS_TEXT_SIZE * 0.45
+        );
+        buildFromCanvas(canvas);
+      }
+
+      window.addEventListener("resize", () => {
+        camera.aspect = innerWidth / innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(innerWidth, innerHeight);
+      });
+
+      await regenerate();
+
+      const clock = new THREE.Clock();
+      (function render() {
+        requestAnimationFrame(render);
+        const dt = clock.getDelta();
+        time += dt;
+        progress += (targetProgress - progress) * dt * 3.0;
+        if (points) {
+          points.material.uniforms.uTime.value = time;
+          points.material.uniforms.uProgress.value = progress;
+        }
+        controls.update();
+        renderer.render(scene, camera);
+      })();
+    </script>
+  </body>
+</html>
